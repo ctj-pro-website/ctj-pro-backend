@@ -361,6 +361,32 @@ def reset_device():
     update_license(license_key, {'devices': '[]'})
     return jsonify({'status': 'success', 'message': 'Device list cleared'}), 200
 
+@app.route('/admin/create-test-license', methods=['POST'])
+def create_test_license():
+    data = request.get_json()
+    admin_key = data.get('admin_key')
+    
+    if admin_key != ADMIN_RESET_KEY:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    email = data.get('email', 'test@example.com')
+    license_key = data.get('license_key', 'CTJP-TEST-ABCD-1234')
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO licenses (email, license_key, created_at, status, devices, used_by_username, activation_count, max_activations)
+                VALUES (%s, %s, NOW(), 'active', '[]', NULL, 0, 2)
+                ON CONFLICT (license_key) DO NOTHING
+            """, (email, license_key))
+            conn.commit()
+            return jsonify({'success': True, 'license_key': license_key})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        put_db_connection(conn)
+
 # ===================== STARTUP =====================# Initialize database pool when module loads (for gunicorn)
 import os
 if os.getenv('DATABASE_URL'):
