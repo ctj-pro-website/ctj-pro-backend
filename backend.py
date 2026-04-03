@@ -361,6 +361,7 @@ def reset_device():
     update_license(license_key, {'devices': '[]'})
     return jsonify({'status': 'success', 'message': 'Device list cleared'}), 200
 
+# ===================== ADMIN CREATE TEST LICENSE =====================
 @app.route('/admin/create-test-license', methods=['POST'])
 def create_test_license():
     data = request.get_json()
@@ -376,12 +377,19 @@ def create_test_license():
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO licenses (email, license_key, created_at, status, devices, used_by_username, activation_count, max_activations)
-                VALUES (%s, %s, NOW(), 'active', '[]', NULL, 0, 2)
+                INSERT INTO licenses (email, license_key, created_at, status, devices, used_by_username, activation_count, max_activations, recovery_pin_hash, security_answer_hash)
+                VALUES (%s, %s, NOW(), 'active', '[]', NULL, 0, 2, NULL, NULL)
                 ON CONFLICT (license_key) DO NOTHING
             """, (email, license_key))
             conn.commit()
-            return jsonify({'success': True, 'license_key': license_key})
+            
+            # Check if inserted
+            cur.execute("SELECT * FROM licenses WHERE license_key = %s", (license_key,))
+            result = cur.fetchone()
+            if result:
+                return jsonify({'success': True, 'license_key': license_key, 'message': 'License created successfully'})
+            else:
+                return jsonify({'success': False, 'message': 'License already exists'}), 409
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
