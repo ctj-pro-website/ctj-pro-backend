@@ -361,8 +361,12 @@ def reset_device():
     update_license(license_key, {'devices': '[]'})
     return jsonify({'status': 'success', 'message': 'Device list cleared'}), 200
 
-# ===================== STARTUP =====================
-if __name__ == '__main__':
+# ===================== STARTUP =====================# Initialize database pool when module loads (for gunicorn)
+import os
+if os.getenv('DATABASE_URL'):
     init_db_pool()
     init_db()
+
+if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+    
