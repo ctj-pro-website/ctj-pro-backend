@@ -417,6 +417,25 @@ def list_licenses():
         return jsonify({'error': str(e), 'type': type(e).__name__}), 500
     finally:
         put_db_connection(conn)
+
+@app.route('/admin/test-db', methods=['GET', 'OPTIONS'])
+def test_db():
+    if request.method == 'OPTIONS':
+        return '', 200
+    auth = request.headers.get('Authorization')
+    if auth != f"Bearer {ADMIN_RESET_KEY}":
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM licenses")
+            count = cur.fetchone()[0]
+            return jsonify({'status': 'ok', 'license_count': count})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        put_db_connection(conn)
+        
 # ===================== STARTUP =====================
 # Initialize database pool when module loads (for gunicorn)
 import os
