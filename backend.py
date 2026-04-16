@@ -384,6 +384,36 @@ def create_test_license():
     finally:
         put_db_connection(conn)
 
+# ===================== ADMIN LIST LICENSES =====================
+@app.route('/admin/list-licenses', methods=['GET'])
+def list_licenses():
+    auth = request.headers.get('Authorization')
+    if auth != f"Bearer {ADMIN_RESET_KEY}":
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT email, license_key, used_by_username, devices, activation_count, status, created_at FROM licenses")
+            rows = cur.fetchall()
+            # Convert each row to a dictionary for clean JSON output
+            licenses = []
+            for row in rows:
+                licenses.append({
+                    'email': row[0],
+                    'license_key': row[1],
+                    'used_by_username': row[2],
+                    'devices': row[3],
+                    'activation_count': row[4],
+                    'status': row[5],
+                    'created_at': row[6].isoformat() if row[6] else None
+                })
+            return jsonify({'licenses': licenses})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        put_db_connection(conn)
+
 # ===================== STARTUP =====================
 # Initialize database pool when module loads (for gunicorn)
 import os
