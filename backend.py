@@ -402,13 +402,13 @@ def list_licenses():
             licenses = []
             for row in rows:
                 licenses.append({
-                    'email': row[0] or '',
-                    'license_key': row[1] or '',
-                    'used_by_username': row[2] or '',
-                    'devices': row[3] if row[3] else '[]',   # already a string from ::text
-                    'activation_count': row[4] if row[4] is not None else 0,
-                    'status': row[5] or 'unknown',
-                    'created_at': row[6].isoformat() if row[6] else None
+                    'email': row.get('email') or '',
+                    'license_key': row.get('license_key') or '',
+                    'used_by_username': row.get('used_by_username') or '',
+                    'devices': row.get('devices') or '[]',
+                    'activation_count': row.get('activation_count') or 0,
+                    'status': row.get('status') or 'unknown',
+                    'created_at': row.get('created_at').isoformat() if row.get('created_at') else None
                 })
             return jsonify({'licenses': licenses})
     except Exception as e:
