@@ -16,7 +16,7 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, supports_credentials=True, allow_headers=["Content-Type", "Authorization"])
 
 # ===== CONFIGURATION (use environment variables!) =====
 SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
@@ -393,13 +393,11 @@ def list_licenses():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            # First, check if table exists
-            cur.execute("SELECT to_regclass('public.licenses')")
-            exists = cur.fetchone()[0]
-            if not exists:
-                return jsonify({'error': 'licenses table does not exist'}), 500
-            
-            cur.execute("SELECT email, license_key, used_by_username, devices, activation_count, status, created_at FROM licenses")
+            cur.execute("""
+                SELECT email, license_key, used_by_username, 
+                       devices::text, activation_count, status, created_at 
+                FROM licenses
+            """)
             rows = cur.fetchall()
             licenses = []
             for row in rows:
@@ -407,20 +405,18 @@ def list_licenses():
                     'email': row[0] or '',
                     'license_key': row[1] or '',
                     'used_by_username': row[2] or '',
-                    'devices': row[3] if row[3] is not None else '[]',
+                    'devices': row[3] if row[3] else '[]',   # already a string from ::text
                     'activation_count': row[4] if row[4] is not None else 0,
                     'status': row[5] or 'unknown',
                     'created_at': row[6].isoformat() if row[6] else None
                 })
             return jsonify({'licenses': licenses})
     except Exception as e:
-        # Log the full exception with traceback
         import traceback
         traceback.print_exc()
-        print(f"Detailed error: {repr(e)}")
         return jsonify({'error': str(e), 'type': type(e).__name__}), 500
     finally:
-        put_db_connection(conn) 
+        put_db_connection(conn)
 # ===================== STARTUP =====================
 # Initialize database pool when module loads (for gunicorn)
 import os
