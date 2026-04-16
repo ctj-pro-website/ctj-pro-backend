@@ -423,19 +423,25 @@ def test_db():
     if request.method == 'OPTIONS':
         return '', 200
     auth = request.headers.get('Authorization')
-    if auth != f"Bearer {ADMIN_RESET_KEY}":
+    if not auth or auth != f"Bearer {ADMIN_RESET_KEY}":
         return jsonify({'error': 'Unauthorized'}), 401
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM licenses")
-            count = cur.fetchone()[0]
+            # Since cursor uses RealDictCursor, fetchone() returns a dict
+            row = cur.fetchone()
+            # The count is under key 'count' (PostgreSQL returns column name as 'count')
+            # Alternatively, use cur.fetchone()[0] if we force tuple, but let's use dict
+            count = row['count'] if row else 0
             return jsonify({'status': 'ok', 'license_count': count})
     except Exception as e:
+        print(f"Error in test-db: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
     finally:
         put_db_connection(conn)
-        
 # ===================== STARTUP =====================
 # Initialize database pool when module loads (for gunicorn)
 import os
