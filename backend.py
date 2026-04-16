@@ -393,11 +393,16 @@ def list_licenses():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            # First, check if table exists
+            cur.execute("SELECT to_regclass('public.licenses')")
+            exists = cur.fetchone()[0]
+            if not exists:
+                return jsonify({'error': 'licenses table does not exist'}), 500
+            
             cur.execute("SELECT email, license_key, used_by_username, devices, activation_count, status, created_at FROM licenses")
             rows = cur.fetchall()
             licenses = []
             for row in rows:
-                # Convert each row to a dict safely
                 licenses.append({
                     'email': row[0] or '',
                     'license_key': row[1] or '',
@@ -409,11 +414,13 @@ def list_licenses():
                 })
             return jsonify({'licenses': licenses})
     except Exception as e:
-        print(f"Error in /admin/list-licenses: {e}")  # This will appear in Render logs
-        return jsonify({'error': str(e)}), 500
+        # Log the full exception with traceback
+        import traceback
+        traceback.print_exc()
+        print(f"Detailed error: {repr(e)}")
+        return jsonify({'error': str(e), 'type': type(e).__name__}), 500
     finally:
-        put_db_connection(conn)
-
+        put_db_connection(conn) 
 # ===================== STARTUP =====================
 # Initialize database pool when module loads (for gunicorn)
 import os
