@@ -255,15 +255,20 @@ def verify_license():
 @app.route('/license-status', methods=['POST'])
 def license_status():
     data = request.get_json()
+    print(f"[DEBUG] /license-status called with data: {data}")
+    print(f"[DEBUG] Headers: {request.headers}")
     key = data.get('license_key')
     username = data.get('username')
+    print(f"[DEBUG] Extracted key: '{key}', username: '{username}'")
 
     license_entry = get_license_by_key(key)
     if not license_entry:
+        print("[DEBUG] License not found in DB")
         return jsonify({'status': 'invalid', 'valid': False}), 200
 
     status = license_entry.get('status', 'invalid')
     bound_username = license_entry.get('used_by_username')
+    print(f"[DEBUG] DB status: {status}, bound_username: {bound_username}")
 
     if status == 'revoked':
         return jsonify({'status': 'revoked', 'valid': False}), 200
