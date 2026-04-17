@@ -288,6 +288,41 @@ def license_status():
 
     return jsonify({'status': 'active', 'valid': True}), 200
 
+@app.route('/admin/list-licenses', methods=['GET'])
+def list_licenses():
+    auth = request.headers.get('Authorization')
+    if auth != f"Bearer {ADMIN_RESET_KEY}":
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT email, license_key, used_by_username, devices::text, 
+                       activation_count, status, created_at, signing_key
+                FROM licenses
+            """)
+            rows = cur.fetchall()
+            licenses = []
+            for row in rows:
+                licenses.append({
+                    'email': row.get('email') or '',
+                    'license_key': row.get('license_key') or '',
+                    'used_by_username': row.get('used_by_username') or '',
+                    'devices': row.get('devices') or '[]',
+                    'activation_count': row.get('activation_count') or 0,
+                    'status': row.get('status') or 'unknown',
+                    'created_at': row.get('created_at').isoformat() if row.get('created_at') else None,
+                    'signing_key': row.get('signing_key') or ''   # include the new column
+                })
+            return jsonify({'licenses': licenses})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        put_db_connection(conn)
+
 # ===================== ADMIN REVOKE =====================
 @app.route('/revoke-license', methods=['POST'])
 def revoke_license():
