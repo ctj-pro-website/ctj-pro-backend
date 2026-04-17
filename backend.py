@@ -442,6 +442,16 @@ def test_db():
         return jsonify({'error': str(e)}), 500
     finally:
         put_db_connection(conn)
+
+@app.route('/debug-license', methods=['POST'])
+def debug_license():
+    data = request.get_json()
+    print("=== DEBUG LICENSE REQUEST ===")
+    print(f"Received data: {data}")
+    print(f"License key: {data.get('license_key')}")
+    print(f"Username: {data.get('username')}")
+    # Now call the real license_status logic
+    return license_status()
 # ===================== STARTUP =====================
 # Initialize database pool when module loads (for gunicorn)
 import os
