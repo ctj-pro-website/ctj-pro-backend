@@ -16,7 +16,7 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True, allow_headers=["Content-Type", "Authorization"])
+CORS(app)
 
 # ===== CONFIGURATION (use environment variables!) =====
 SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
@@ -36,8 +36,6 @@ def init_db_pool():
     if DATABASE_URL:
         db_pool = SimpleConnectionPool(1, 20, DATABASE_URL, cursor_factory=RealDictCursor)
     else:
-        # Fallback for local development (use a local PostgreSQL or SQLite)
-        # For simplicity, we'll raise an error
         raise Exception("DATABASE_URL environment variable not set")
 
 def get_db_connection():
@@ -62,7 +60,8 @@ def init_db():
                     activation_count INTEGER DEFAULT 0,
                     max_activations INTEGER DEFAULT 2,
                     recovery_pin_hash TEXT,
-                    security_answer_hash TEXT
+                    security_answer_hash TEXT,
+                    signing_key TEXT
                 )
             """)
             conn.commit()
@@ -151,7 +150,12 @@ def activate_license():
         return jsonify({'success': False, 'error': 'License has been revoked.'}), 200
 
     if license_entry['used_by_username'] == username:
-        return jsonify({'success': True}), 200
+        # Already activated – return existing signing key
+        signing_key = license_entry.get('signing_key')
+        if not signing_key:
+            signing_key = secrets.token_hex(32)
+            update_license(key, {'signing_key': signing_key})
+        return jsonify({'success': True, 'signing_key': signing_key}), 200
 
     if license_entry['used_by_username'] is not None:
         return jsonify({'success': False, 'error': 'License already used by another user. Use recovery instead.'}), 200
@@ -161,17 +165,21 @@ def activate_license():
     if activation_count >= max_activations:
         return jsonify({'success': False, 'error': 'Activation limit reached. Cannot activate new license.'}), 200
 
+    # Generate a new signing key for this activation
+    signing_key = secrets.token_hex(32)
+
     updates = {
         'used_by_username': username,
         'activation_count': activation_count + 1,
         'recovery_pin_hash': hash_data(pin),
         'security_answer_hash': hash_data(answer),
         'devices': json.dumps([device_id]),
-        'status': 'active'
+        'status': 'active',
+        'signing_key': signing_key
     }
     update_license(key, updates)
 
-    return jsonify({'success': True}), 200
+    return jsonify({'success': True, 'signing_key': signing_key}), 200
 
 # ===================== LICENSE RECOVERY =====================
 @app.route('/recover-license', methods=['POST'])
@@ -255,20 +263,15 @@ def verify_license():
 @app.route('/license-status', methods=['POST'])
 def license_status():
     data = request.get_json()
-    print(f"[DEBUG] /license-status called with data: {data}")
-    print(f"[DEBUG] Headers: {request.headers}")
     key = data.get('license_key')
     username = data.get('username')
-    print(f"[DEBUG] Extracted key: '{key}', username: '{username}'")
 
     license_entry = get_license_by_key(key)
     if not license_entry:
-        print("[DEBUG] License not found in DB")
         return jsonify({'status': 'invalid', 'valid': False}), 200
 
     status = license_entry.get('status', 'invalid')
     bound_username = license_entry.get('used_by_username')
-    print(f"[DEBUG] DB status: {status}, bound_username: {bound_username}")
 
     if status == 'revoked':
         return jsonify({'status': 'revoked', 'valid': False}), 200
@@ -337,8 +340,8 @@ def paystack_webhook():
                     else:
                         license_key = generate_license_key()
                         cur.execute("""
-                            INSERT INTO licenses (email, license_key, created_at, status, devices, used_by_username, activation_count, max_activations, recovery_pin_hash, security_answer_hash)
-                            VALUES (%s, %s, %s, 'active', '[]', NULL, 0, 2, NULL, NULL)
+                            INSERT INTO licenses (email, license_key, created_at, status, devices, used_by_username, activation_count, max_activations, recovery_pin_hash, security_answer_hash, signing_key)
+                            VALUES (%s, %s, %s, 'active', '[]', NULL, 0, 2, NULL, NULL, NULL)
                         """, (email, license_key, datetime.now()))
                         conn.commit()
                         send_email(email, license_key)
@@ -378,8 +381,8 @@ def create_test_license():
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO licenses (email, license_key, created_at, status, devices, used_by_username, activation_count, max_activations, recovery_pin_hash, security_answer_hash)
-                VALUES (%s, %s, NOW(), 'active', '[]', NULL, 0, 2, NULL, NULL)
+                INSERT INTO licenses (email, license_key, created_at, status, devices, used_by_username, activation_count, max_activations, recovery_pin_hash, security_answer_hash, signing_key)
+                VALUES (%s, %s, NOW(), 'active', '[]', NULL, 0, 2, NULL, NULL, NULL)
                 ON CONFLICT (license_key) DO NOTHING
             """, (email, license_key))
             conn.commit()
@@ -388,84 +391,8 @@ def create_test_license():
         return jsonify({'error': str(e)}), 500
     finally:
         put_db_connection(conn)
-        
-@app.route('/admin/list-licenses', methods=['GET'])
-def list_licenses():
-    auth = request.headers.get('Authorization')
-    if auth != f"Bearer {ADMIN_RESET_KEY}":
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT email, license_key, used_by_username, 
-                       devices::text, activation_count, status, created_at 
-                FROM licenses
-            """)
-            rows = cur.fetchall()
-            licenses = []
-            for row in rows:
-                licenses.append({
-                    'email': row.get('email') or '',
-                    'license_key': row.get('license_key') or '',
-                    'used_by_username': row.get('used_by_username') or '',
-                    'devices': row.get('devices') or '[]',
-                    'activation_count': row.get('activation_count') or 0,
-                    'status': row.get('status') or 'unknown',
-                    'created_at': row.get('created_at').isoformat() if row.get('created_at') else None
-                })
-            return jsonify({'licenses': licenses})
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'type': type(e).__name__}), 500
-    finally:
-        put_db_connection(conn)
-
-@app.route('/admin/test-db', methods=['GET', 'OPTIONS'])
-def test_db():
-    if request.method == 'OPTIONS':
-        return '', 200
-    auth = request.headers.get('Authorization')
-    if not auth or auth != f"Bearer {ADMIN_RESET_KEY}":
-        return jsonify({'error': 'Unauthorized'}), 401
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM licenses")
-            # Since cursor uses RealDictCursor, fetchone() returns a dict
-            row = cur.fetchone()
-            # The count is under key 'count' (PostgreSQL returns column name as 'count')
-            # Alternatively, use cur.fetchone()[0] if we force tuple, but let's use dict
-            count = row['count'] if row else 0
-            return jsonify({'status': 'ok', 'license_count': count})
-    except Exception as e:
-        print(f"Error in test-db: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-    finally:
-        put_db_connection(conn)
-
-@app.route('/debug-license-status', methods=['POST'])
-def debug_license_status():
-    try:
-        data = request.get_json()
-        print("=== DEBUG LICENSE REQUEST ===")
-        print(f"Headers: {dict(request.headers)}")
-        print(f"Data: {data}")
-        # Now call the real license_status logic
-        return license_status()
-    except Exception as e:
-        print(f"Error in debug: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
 
 # ===================== STARTUP =====================
-# Initialize database pool when module loads (for gunicorn)
-import os
 if os.getenv('DATABASE_URL'):
     init_db_pool()
     init_db()
