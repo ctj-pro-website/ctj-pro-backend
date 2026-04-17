@@ -443,6 +443,21 @@ def test_db():
     finally:
         put_db_connection(conn)
 
+@app.route('/debug-license-status', methods=['POST'])
+def debug_license_status():
+    try:
+        data = request.get_json()
+        print("=== DEBUG LICENSE REQUEST ===")
+        print(f"Headers: {dict(request.headers)}")
+        print(f"Data: {data}")
+        # Now call the real license_status logic
+        return license_status()
+    except Exception as e:
+        print(f"Error in debug: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
 # ===================== STARTUP =====================
 # Initialize database pool when module loads (for gunicorn)
 import os
