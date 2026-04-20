@@ -16,7 +16,7 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, supports_credentials=True, allow_headers=["Content-Type", "Authorization"])
 
 # ===== CONFIGURATION (use environment variables!) =====
 SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
@@ -150,7 +150,6 @@ def activate_license():
         return jsonify({'success': False, 'error': 'License has been revoked.'}), 200
 
     if license_entry['used_by_username'] == username:
-        # Already activated – return existing signing key
         signing_key = license_entry.get('signing_key')
         if not signing_key:
             signing_key = secrets.token_hex(32)
@@ -165,9 +164,7 @@ def activate_license():
     if activation_count >= max_activations:
         return jsonify({'success': False, 'error': 'Activation limit reached. Cannot activate new license.'}), 200
 
-    # Generate a new signing key for this activation
     signing_key = secrets.token_hex(32)
-
     updates = {
         'used_by_username': username,
         'activation_count': activation_count + 1,
@@ -288,12 +285,33 @@ def license_status():
 
     return jsonify({'status': 'active', 'valid': True}), 200
 
-@app.route('/admin/list-licenses', methods=['GET'])
-def list_licenses():
+# ===================== ADMIN ENDPOINTS =====================
+@app.route('/admin/test-db', methods=['GET', 'OPTIONS'])
+def test_db():
+    if request.method == 'OPTIONS':
+        return '', 200
     auth = request.headers.get('Authorization')
     if auth != f"Bearer {ADMIN_RESET_KEY}":
         return jsonify({'error': 'Unauthorized'}), 401
-    
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) as cnt FROM licenses")
+            row = cur.fetchone()
+            count = row['cnt'] if row else 0
+            return jsonify({'status': 'ok', 'license_count': count})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        put_db_connection(conn)
+
+@app.route('/admin/list-licenses', methods=['GET', 'OPTIONS'])
+def list_licenses():
+    if request.method == 'OPTIONS':
+        return '', 200
+    auth = request.headers.get('Authorization')
+    if auth != f"Bearer {ADMIN_RESET_KEY}":
+        return jsonify({'error': 'Unauthorized'}), 401
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -313,7 +331,7 @@ def list_licenses():
                     'activation_count': row.get('activation_count') or 0,
                     'status': row.get('status') or 'unknown',
                     'created_at': row.get('created_at').isoformat() if row.get('created_at') else None,
-                    'signing_key': row.get('signing_key') or ''   # include the new column
+                    'signing_key': row.get('signing_key') or ''
                 })
             return jsonify({'licenses': licenses})
     except Exception as e:
@@ -323,22 +341,56 @@ def list_licenses():
     finally:
         put_db_connection(conn)
 
-# ===================== ADMIN REVOKE =====================
+@app.route('/admin/create-test-license', methods=['POST'])
+def create_test_license():
+    data = request.get_json()
+    admin_key = data.get('admin_key')
+    if admin_key != ADMIN_RESET_KEY:
+        return jsonify({'error': 'Unauthorized'}), 401
+    email = data.get('email', 'test@example.com')
+    license_key = data.get('license_key', 'CTJP-TEST-1234')
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO licenses (email, license_key, created_at, status, devices, used_by_username, activation_count, max_activations, recovery_pin_hash, security_answer_hash, signing_key)
+                VALUES (%s, %s, NOW(), 'active', '[]', NULL, 0, 2, NULL, NULL, NULL)
+                ON CONFLICT (license_key) DO NOTHING
+            """, (email, license_key))
+            conn.commit()
+            return jsonify({'success': True, 'license_key': license_key})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        put_db_connection(conn)
+
 @app.route('/revoke-license', methods=['POST'])
 def revoke_license():
     data = request.get_json()
     admin_key = data.get('admin_key')
     license_key = data.get('license_key')
-
     if admin_key != ADMIN_REVOKE_KEY:
         return jsonify({'error': 'Unauthorized'}), 401
-
     license_entry = get_license_by_key(license_key)
     if not license_entry:
         return jsonify({'error': 'License not found'}), 404
-
     update_license(license_key, {'status': 'revoked'})
     return jsonify({'status': 'success', 'message': 'License revoked'}), 200
+
+@app.route('/reset-device', methods=['POST'])
+def reset_device():
+    data = request.get_json()
+    admin_key = data.get('admin_key')
+    license_key = data.get('license_key')
+    if admin_key != ADMIN_RESET_KEY:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not license_key:
+        return jsonify({'error': 'Missing license key'}), 400
+    license_entry = get_license_by_key(license_key)
+    if not license_entry:
+        return jsonify({'error': 'License key not found'}), 404
+    update_license(license_key, {'devices': '[]'})
+    return jsonify({'status': 'success', 'message': 'Device list cleared'}), 200
 
 # ===================== PAYSTACK WEBHOOK =====================
 def verify_paystack_signature():
@@ -357,7 +409,6 @@ def verify_paystack_signature():
 def paystack_webhook():
     if not verify_paystack_signature():
         return jsonify({'error': 'Invalid signature'}), 400
-
     event = request.get_json()
     if event.get('event') == 'charge.success':
         data = event.get('data')
@@ -384,48 +435,6 @@ def paystack_webhook():
             finally:
                 put_db_connection(conn)
     return jsonify({'status': 'ignored'}), 200
-
-# ===================== ADMIN RESET DEVICE =====================
-@app.route('/reset-device', methods=['POST'])
-def reset_device():
-    data = request.get_json()
-    admin_key = data.get('admin_key')
-    license_key = data.get('license_key')
-
-    if admin_key != ADMIN_RESET_KEY:
-        return jsonify({'error': 'Unauthorized'}), 401
-    if not license_key:
-        return jsonify({'error': 'Missing license key'}), 400
-
-    license_entry = get_license_by_key(license_key)
-    if not license_entry:
-        return jsonify({'error': 'License key not found'}), 404
-
-    update_license(license_key, {'devices': '[]'})
-    return jsonify({'status': 'success', 'message': 'Device list cleared'}), 200
-
-@app.route('/admin/create-test-license', methods=['POST'])
-def create_test_license():
-    data = request.get_json()
-    admin_key = data.get('admin_key')
-    if admin_key != ADMIN_RESET_KEY:
-        return jsonify({'error': 'Unauthorized'}), 401
-    email = data.get('email', 'test@example.com')
-    license_key = data.get('license_key', 'CTJP-TEST-1234')
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO licenses (email, license_key, created_at, status, devices, used_by_username, activation_count, max_activations, recovery_pin_hash, security_answer_hash, signing_key)
-                VALUES (%s, %s, NOW(), 'active', '[]', NULL, 0, 2, NULL, NULL, NULL)
-                ON CONFLICT (license_key) DO NOTHING
-            """, (email, license_key))
-            conn.commit()
-            return jsonify({'success': True, 'license_key': license_key})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        put_db_connection(conn)
 
 # ===================== STARTUP =====================
 if os.getenv('DATABASE_URL'):
